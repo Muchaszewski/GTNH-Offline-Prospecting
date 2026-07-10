@@ -1,0 +1,448 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTNH Offline Prospector</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { border: none; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 24px; }
+        .card-header { background-color: #212529; color: #fff; font-weight: 600; }
+        .btn-primary { background-color: #0d6efd; border: none; }
+        .progress-console { background-color: #1e1e1e; color: #00ff00; font-family: 'Courier New', monospace; padding: 10px; border-radius: 4px; font-size: 0.9rem; min-height: 45px; }
+        .process-card { border-left: 4px solid #0d6efd; background-color: #fff; padding: 15px; margin-bottom: 15px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .region-item { padding: 6px 8px; border-bottom: 1px solid #eee; transition: background-color 0.1s; border-radius: 4px; margin-bottom: 2px;}
+        .region-item:last-child { border-bottom: none; }
+        .region-item:hover { background-color: #f1f5f9; }
+        #selectionStatusBox { transition: all 0.2s; }
+    </style>
+</head>
+<body>
+<nav class="navbar navbar-dark bg-dark mb-4">
+    <div class="container d-flex justify-content-between align-items-center">
+        <span class="navbar-brand mb-0 h1">GTNH Offline Prospector</span>
+        <a href="/canvas" class="btn btn-primary fw-bold px-4">Open Web Map</a>
+    </div>
+</nav>
+
+<div class="container">
+    <div class="row mb-4" id="activeProcessesRow" style="display: none;">
+        <div class="col-12">
+            <div class="card border-primary">
+                <div class="card-header bg-primary text-white">Active Prospecting Tasks</div>
+                <div class="card-body" id="activeProcessesContainer"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="row">
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">1. Mine Data (Prospect)</div>
+                <div class="card-body">
+                    <form id="prospectingForm" action="/start_prospecting" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label">Target Dimension</label>
+                            <select class="form-select" id="dimension" name="dimension">
+                                {% for group, dims in dimensions.items() %}
+                                    <optgroup label="{{ group }}">
+                                        {% for folder, name in dims.items() %}
+                                            <option value="{{ folder }}">{{ name }} ({{ folder }})</option>
+                                        {% endfor %}
+                                    </optgroup>
+                                {% endfor %}
+                                <optgroup label="Other">
+                                    <option value="custom">Custom Folder</option>
+                                </optgroup>
+                            </select>
+                        </div>
+                        <div class="mb-3 d-none" id="customDimDiv">
+                            <input type="text" class="form-control border-primary" id="custom_dimension" name="custom_dimension" placeholder="e.g. DIM_SPACESTATION2">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label d-flex justify-content-between align-items-end mb-1">
+                                <span>Select Specific Regions</span>
+                                <a href="#" id="selectAllRegions" class="text-decoration-none small fw-bold">Toggle Visible</a>
+                            </label>
+                            <input type="text" id="regionSearch" class="form-control form-control-sm mb-2" placeholder="Search regions (e.g. r.0.0)...">
+                            
+                            <div class="mb-2 p-2 border rounded shadow-sm" id="selectionStatusBox" style="background-color: #f8f9fa;">
+                                <span class="badge bg-secondary" id="selectionCount">0 selected</span>
+                                <small class="text-muted ms-2" id="selectionSummary">ALL regions will be processed</small>
+                            </div>
+
+                            <div id="regionsChecklist" class="border rounded p-2 bg-light" style="max-height: 220px; overflow-y: auto;">
+                                <div class="text-muted small">Loading regions...</div>
+                            </div>
+                            <input type="hidden" id="selectedRegionsInput" name="regions" value="">
+                        </div>
+
+                        <button type="submit" class="btn btn-success w-100 py-3 fw-bold" id="startBtn">Run Prospector</button>
+                    </form>
+                    <div id="outputStatus" class="mt-3 d-none alert"></div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-md-6">
+            <div class="card h-100">
+                <div class="card-header">Global Settings</div>
+                <div class="card-body">
+                    <form action="/save_settings" method="POST">
+                        <div class="mb-3">
+                            <label class="form-label">World Directory Path</label>
+                            <input type="text" class="form-control" name="world_dir" id="world_dir_input" value="{{ settings.world_dir }}" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label class="form-label">Skipped Block IDs</label>
+                            <textarea class="form-control" name="skip_block_ids" rows="2">{{ settings.skip_block_ids }}</textarea>
+                            <div class="form-text">Comma-separated IDs of common blocks to ignore.</div>
+                        </div>
+
+                        <div class="row">
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">CPU Usage (%)</label>
+                                <div class="input-group">
+                                    <input type="number" step="1" min="1" max="100" class="form-control" name="cpu_usage" value="{{ settings.cpu_usage }}">
+                                    <span class="input-group-text">%</span>
+                                </div>
+                            </div>
+                            <div class="col-md-6 mb-3">
+                                <label class="form-label">Dump Directory</label>
+                                <input type="text" class="form-control" name="dump_dir" value="{{ settings.dump_dir }}">
+                            </div>
+                        </div>
+                        
+                        <div class="form-check form-switch mb-4">
+                            <input class="form-check-input" type="checkbox" name="only_ores" {% if settings.only_ores %}checked{% endif %}>
+                            <label class="form-check-label">Only Process Ores</label>
+                        </div>
+                        <button type="submit" class="btn btn-primary w-100 py-2">Save Configuration</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <div class="row mt-2">
+        <div class="col-12">
+            <div class="card border-info">
+                <div class="card-header bg-info text-dark fw-bold">2. Export Game Markers (JourneyMap)</div>
+                <div class="card-body">
+                    <form id="exportForm">
+                        <div class="row">
+                            <div class="col-md-4 mb-3">
+                                <label class="form-label">Prospected Dimension</label>
+                                <select class="form-select" id="exportDimSelect" name="export_dim" required>
+                                    {% if not available_dims %}
+                                        <option value="">No data found. Prospect first!</option>
+                                    {% endif %}
+                                    <option value="" disabled selected>-- Select --</option>
+                                    {% for d in available_dims %}
+                                        <option value="{{ d }}">{{ d }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label class="form-label">What to export</label>
+                                <select class="form-select" id="oreFilterSelect" name="ore_filter" required>
+                                    <option value="All Ores">All Ores</option>
+                                </select>
+                            </div>
+                            <div class="col-md-3 mb-3">
+                                <label class="form-label">Export Format</label>
+                                <select class="form-select" name="export_type" required>
+                                    <option value="journeymap">JourneyMap Waypoints</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2 mb-3 d-flex align-items-end">
+                                <button type="submit" class="btn btn-info w-100 fw-bold" {% if not available_dims %}disabled{% endif %}>Export</button>
+                            </div>
+                        </div>
+                    </form>
+                    <div id="exportStatus" class="mt-2 d-none alert"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    let pollInterval = null;
+    let activePids = new Set();
+    let stoppedPids = new Set(); 
+
+    function updateSelectionSummary() {
+        const checkedBoxes = Array.from(document.querySelectorAll('.region-checkbox:checked'));
+        const checked = checkedBoxes.map(c => c.value);
+        document.getElementById('selectedRegionsInput').value = checked.join(',');
+        
+        const countBadge = document.getElementById('selectionCount');
+        const summaryText = document.getElementById('selectionSummary');
+        const statusBox = document.getElementById('selectionStatusBox');
+        
+        document.querySelectorAll('.region-item').forEach(item => {
+            const cb = item.querySelector('.region-checkbox');
+            if (cb && cb.checked) {
+                item.style.backgroundColor = '#d3e2f7';
+            } else {
+                item.style.backgroundColor = 'transparent';
+            }
+        });
+        
+        if (checked.length === 0) {
+            countBadge.innerText = '0 selected';
+            countBadge.className = 'badge bg-secondary';
+            summaryText.innerText = 'ALL regions will be processed';
+            statusBox.classList.remove('border-primary');
+        } else {
+            countBadge.innerText = `${checked.length} selected`;
+            countBadge.className = 'badge bg-primary';
+            statusBox.classList.add('border-primary');
+            
+            if (checked.length <= 4) {
+                summaryText.innerText = checked.join(', ');
+            } else {
+                summaryText.innerText = checked.slice(0, 4).join(', ') + ` ... and ${checked.length - 4} more`;
+            }
+        }
+    }
+
+    document.getElementById('regionsChecklist').addEventListener('change', (e) => {
+        if (e.target.classList.contains('region-checkbox')) updateSelectionSummary();
+    });
+
+    async function fetchRegions() {
+        const dimSelect = document.getElementById('dimension').value;
+        const customDim = document.getElementById('custom_dimension').value;
+        const checklist = document.getElementById('regionsChecklist');
+        
+        if (dimSelect === 'custom') {
+            document.getElementById('customDimDiv').classList.remove('d-none');
+            if(!customDim) {
+                checklist.innerHTML = '<div class="text-muted small">Type a custom folder name to load regions...</div>';
+                return;
+            }
+        } else {
+            document.getElementById('customDimDiv').classList.add('d-none');
+        }
+
+        const formData = new FormData();
+        formData.append('dimension', dimSelect);
+        if (dimSelect === 'custom') formData.append('custom_dimension', customDim);
+
+        checklist.innerHTML = '<div class="text-muted small spinner-border spinner-border-sm" role="status"></div> Loading...';
+
+        try {
+            const res = await fetch('/api/regions', { method: 'POST', body: formData });
+            const data = await res.json();
+            
+            if (data.status === 'success') {
+                if (data.regions.length === 0) {
+                    checklist.innerHTML = '<div class="text-muted small">No region files found. Did you set your World Directory correctly?</div>';
+                    return;
+                }
+                
+                let html = '';
+                data.regions.forEach(r => {
+                    html += `
+                    <div class="form-check region-item">
+                        <input class="form-check-input region-checkbox" type="checkbox" value="${r.name}" id="chk_${r.name}">
+                        <label class="form-check-label w-100" style="font-size: 0.85rem; cursor: pointer;" for="chk_${r.name}">
+                            <strong>${r.name}</strong> 
+                            <span class="text-muted float-end" style="font-family: monospace;">${r.label}</span>
+                        </label>
+                    </div>`;
+                });
+                checklist.innerHTML = html;
+                updateSelectionSummary();
+            } else {
+                checklist.innerHTML = `<div class="text-danger small">${data.message}</div>`;
+            }
+        } catch (e) {
+            checklist.innerHTML = '<div class="text-danger small">Error fetching regions.</div>';
+        }
+    }
+
+    document.getElementById('dimension').addEventListener('change', fetchRegions);
+    document.getElementById('custom_dimension').addEventListener('blur', fetchRegions);
+    
+    document.getElementById('regionSearch').addEventListener('input', function(e) {
+        const term = e.target.value.toLowerCase();
+        document.querySelectorAll('.region-item').forEach(item => {
+            const text = item.innerText.toLowerCase();
+            item.style.display = text.includes(term) ? '' : 'none';
+        });
+    });
+
+    document.getElementById('selectAllRegions').addEventListener('click', (e) => {
+        e.preventDefault();
+        const checkboxes = document.querySelectorAll('.region-checkbox');
+        const visibleCheckboxes = Array.from(checkboxes).filter(c => c.closest('.region-item').style.display !== 'none');
+        const allChecked = visibleCheckboxes.every(c => c.checked);
+        visibleCheckboxes.forEach(c => c.checked = !allChecked);
+        updateSelectionSummary();
+    });
+
+    document.getElementById('prospectingForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const statusDiv = document.getElementById('outputStatus');
+        document.getElementById('startBtn').disabled = true;
+        statusDiv.className = "mt-3 alert alert-info"; statusDiv.classList.remove('d-none'); statusDiv.innerText = "Initializing...";
+        try {
+            const res = await fetch('/start_prospecting', { method: 'POST', body: new FormData(this) });
+            const data = await res.json();
+            if (res.ok) {
+                statusDiv.className = "mt-3 alert alert-success"; statusDiv.innerHTML = data.message;
+                startPolling(); setTimeout(() => statusDiv.classList.add('d-none'), 3000);
+            } else { statusDiv.className = "mt-3 alert alert-danger"; statusDiv.innerText = data.message; }
+        } catch (error) { statusDiv.className = "mt-3 alert alert-danger"; statusDiv.innerText = "Connection failed."; }
+        finally { document.getElementById('startBtn').disabled = false; }
+    });
+    
+    document.getElementById('exportDimSelect').addEventListener('change', async function(e) {
+        const dim = e.target.value;
+        const oreSelect = document.getElementById('oreFilterSelect');
+        oreSelect.innerHTML = '<option value="All Ores">All Ores</option>';
+        if (!dim) return;
+        
+        try {
+            const res = await fetch(`/api/ores/${dim}`);
+            const ores = await res.json();
+            ores.forEach(ore => {
+                const opt = document.createElement('option');
+                opt.value = ore;
+                opt.textContent = ore;
+                oreSelect.appendChild(opt);
+            });
+        } catch (err) {}
+    });
+
+    document.getElementById('exportForm').addEventListener('submit', async function(e) {
+        e.preventDefault();
+        const statusDiv = document.getElementById('exportStatus');
+        statusDiv.className = "mt-2 alert alert-info"; statusDiv.classList.remove('d-none'); statusDiv.innerText = "Generating...";
+        try {
+            const res = await fetch('/generate_export', { method: 'POST', body: new FormData(this) });
+            const data = await res.json();
+            if (res.ok) {
+                statusDiv.className = "mt-2 alert alert-success"; statusDiv.innerHTML = data.message;
+            } else {
+                statusDiv.className = "mt-2 alert alert-danger"; statusDiv.innerText = data.message;
+            }
+        } catch (error) { statusDiv.className = "mt-2 alert alert-danger"; statusDiv.innerText = "Connection failed."; }
+    });
+
+    function checkEmptyProcesses() {
+        if (document.querySelectorAll('.process-card').length === 0) {
+            document.getElementById('activeProcessesRow').style.display = 'none';
+        }
+    }
+
+    async function stopProcess(pid) {
+        if(!confirm("Are you sure you want to cancel this operation?")) return;
+        stoppedPids.add(pid); 
+        try {
+            const response = await fetch('/stop_prospecting', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({pid: pid})
+            });
+            if (response.ok) {
+                document.getElementById(`process-card-${pid}`)?.remove();
+                checkEmptyProcesses();
+            }
+        } catch (error) { console.error(error); }
+    }
+
+    async function fetchStatus() {
+        try {
+            const res = await fetch('/get_status'); 
+            const data = await res.json();
+            
+            const container = document.getElementById('activeProcessesContainer');
+            const row = document.getElementById('activeProcessesRow');
+            const currentPids = new Set(Object.keys(data));
+            
+            for (const pid of activePids) {
+                if (!currentPids.has(pid)) {
+                    const card = document.getElementById(`process-card-${pid}`);
+                    if (card && !stoppedPids.has(pid)) {
+                        card.classList.remove('border-primary');
+                        card.classList.add('border-success');
+                        
+                        const h5 = card.querySelector('h5');
+                        h5.classList.remove('text-primary');
+                        h5.classList.add('text-success');
+                        if (!h5.innerHTML.includes('Completed')) {
+                            h5.innerHTML += ' <span class="badge bg-success ms-2">Completed</span>';
+                        }
+                        
+                        const consoleDiv = card.querySelector('.progress-console');
+                        consoleDiv.innerText += "\n\n[SUCCESS] Prospecting finished successfully!";
+                        consoleDiv.style.color = "#00ff00";
+                        
+                        const btn = card.querySelector('button');
+                        btn.innerText = "Dismiss";
+                        btn.classList.replace('btn-danger', 'btn-secondary');
+                        btn.onclick = () => { card.remove(); checkEmptyProcesses(); };
+                    }
+                    activePids.delete(pid);
+                }
+            }
+            
+            if (currentPids.size > 0 || document.querySelectorAll('.process-card').length > 0) {
+                row.style.display = 'block';
+            } else {
+                row.style.display = 'none';
+            }
+            
+            for (const pid of currentPids) {
+                activePids.add(pid);
+                let card = document.getElementById(`process-card-${pid}`);
+                
+                if (!card) {
+                    const html = `
+                    <div class="process-card border-primary" id="process-card-${pid}">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                            <h5 class="mb-0 text-primary">${data[pid].name} <small class="text-muted">(PID: ${pid})</small></h5>
+                            <button class="btn btn-sm btn-danger" onclick="stopProcess('${pid}')">Cancel</button>
+                        </div>
+                        <div class="progress-console" id="console-${pid}">${data[pid].output || "Waiting..."}</div>
+                    </div>`;
+                    container.insertAdjacentHTML('beforeend', html);
+                } else {
+                    const consoleDiv = card.querySelector(`#console-${pid}`);
+                    if (data[pid].output && consoleDiv) {
+                        consoleDiv.innerText = data[pid].output;
+                    }
+                }
+            }
+            
+            return (activePids.size > 0);
+            
+        } catch (e) { return false; }
+    }
+    
+    function startPolling() {
+        if (pollInterval) clearInterval(pollInterval);
+        fetchStatus(); 
+        pollInterval = setInterval(async () => { 
+            if (!(await fetchStatus())) {
+                clearInterval(pollInterval); 
+            }
+        }, 500);
+    }
+
+    document.addEventListener("DOMContentLoaded", () => {
+        startPolling();
+        if (document.getElementById('world_dir_input').value.trim() !== '') {
+            fetchRegions();
+        }
+    });
+</script>
+</body>
+</html>

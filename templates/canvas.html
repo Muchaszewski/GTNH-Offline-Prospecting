@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GTNH Canvas Map</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body, html { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background-color: #121212; color: #fff; font-family: 'Segoe UI', Tahoma, sans-serif; }
+        #app-container { display: flex; width: 100vw; height: 100vh; }
+        #sidebar { width: 350px; background-color: #1e1e1e; border-right: 1px solid #333; display: flex; flex-direction: column; z-index: 10; box-shadow: 2px 0 10px rgba(0,0,0,0.5); }
+        .sidebar-header { padding: 15px; background-color: #252525; border-bottom: 1px solid #333; }
+        .sidebar-content { flex: 1; overflow-y: auto; padding: 10px; }
+        #map-container { flex: 1; position: relative; cursor: grab; overflow: hidden; background-color: #0a0a0a; }
+        #map-container:active { cursor: grabbing; }
+        canvas { display: block; width: 100%; height: 100%; }
+        #coord-overlay { position: absolute; bottom: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 5px 10px; border-radius: 4px; font-family: monospace; font-size: 14px; pointer-events: none; }
+        #loading-overlay { position: absolute; top: 10px; left: 10px; background: rgba(0, 123, 255, 0.8); padding: 5px 10px; border-radius: 4px; font-size: 14px; display: none; }
+        #tooltip { position: absolute; background: rgba(15, 15, 15, 0.95); color: #fff; padding: 8px 12px; border: 1px solid #444; border-radius: 4px; pointer-events: none; font-size: 12px; z-index: 100; display: none; box-shadow: 0 4px 6px rgba(0,0,0,0.3); white-space: pre-wrap; line-height: 1.4; }
+        .ore-item { display: flex; align-items: center; justify-content: space-between; padding: 8px 10px; margin-bottom: 5px; background-color: #2a2a2a; border-radius: 4px; cursor: pointer; user-select: none; transition: background-color 0.1s;}
+        .ore-item:hover { background-color: #353535; }
+        .ore-item.disabled { opacity: 0.5; }
+        .ore-color { width: 16px; height: 16px; border-radius: 3px; margin-right: 10px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.2); }
+        .ore-name { flex: 1; font-size: 0.9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ore-count { background: #444; padding: 2px 6px; border-radius: 10px; font-size: 0.75rem; font-weight: bold; }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #1e1e1e; }
+        ::-webkit-scrollbar-thumb { background: #555; border-radius: 4px; }
+    </style>
+</head>
+<body>
+<div id="app-container">
+    <div id="sidebar">
+        <div class="sidebar-header">
+            <a href="/" style="color:#0d6efd; text-decoration:none; font-size:14px; display:block; margin-bottom:10px;">&larr; Back to Dashboard</a>
+            <h5 class="mb-3">Ore Prospector Map</h5>
+            <select class="form-select form-select-sm bg-dark text-light border-secondary mb-3" id="dimSelect">
+                <option value="">Loading dimensions...</option>
+            </select>
+            
+            <div class="form-check form-switch mb-2">
+                <input class="form-check-input" type="checkbox" id="hideSmallOres" checked>
+                <label class="form-check-label text-light" style="font-size: 0.85rem;">Hide Small Ores</label>
+            </div>
+            
+            <div class="d-flex gap-2 mb-3">
+                <button class="btn btn-sm btn-outline-primary w-100" id="btnShowAll">Show All</button>
+                <button class="btn btn-sm btn-outline-secondary w-100" id="btnHideAll">Hide All</button>
+            </div>
+            
+            <input type="text" class="form-control form-control-sm bg-dark text-light border-secondary" id="searchInput" placeholder="Search ores...">
+        </div>
+        <div class="sidebar-content" id="oreListContainer">
+            <div class="text-center text-muted mt-4" id="emptyState"><small>Select a dimension.</small></div>
+        </div>
+    </div>
+    
+    <div id="map-container">
+        <canvas id="mapCanvas"></canvas>
+        <div id="coord-overlay">X: 0 | Z: 0</div>
+        <div id="loading-overlay">Loading region data...</div>
+        <div id="tooltip"></div>
+    </div>
+</div>
+
+<script>
+    let activeDim = null;
+    let availableRegions = new Set();
+    
+    let dictionary = {};          
+    let dictColors = {};          
+    let loadedRegions = new Set();
+    let regionsCache = {};        
+    let spatialChunks = {};       
+    
+    let nameToKeys = {}; 
+    let nameColors = {};
+    let mergedCounts = {};
+    let visibleNames = new Set(); 
+    
+    let hideSmall = true;
+    let searchQuery = "";
+    
+    let camera = { x: 0, z: 0, zoom: 0.5 };
+    let isDragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let mousePos = { x: 0, z: 0 }; 
+    let renderPending = false;
+    
+    const canvas = document.getElementById('mapCanvas');
+    const ctx = canvas.getContext('2d', { alpha: false });
+    const tooltip = document.getElementById('tooltip');
+
+    function updateRegionCanvas(rName) {
+        const rc = regionsCache[rName];
+        if (!rc) return;
+
+        const ctxOff = rc.canvas.getContext('2d');
+        ctxOff.clearRect(0, 0, 512, 512);
+
+        const colorBatches = {};
+        for (let i = 0; i < rc.blocks.length; i++) {
+            const b = rc.blocks[i];
+            const name = dictionary[b.key];
+            
+            if (!visibleNames.has(name)) continue;
+            if (hideSmall && b.small) continue;
+
+            const color = dictColors[b.key];
+            if (!colorBatches[color]) colorBatches[color] = [];
+            colorBatches[color].push(b);
+        }
+
+        const originX = rc.rx * 512;
+        const originZ = rc.rz * 512;
+
+        for (const color in colorBatches) {
+            ctxOff.fillStyle = color;
+            ctxOff.beginPath();
+            const batch = colorBatches[color];
+            for (let i = 0; i < batch.length; i++) {
+                ctxOff.rect((batch[i].x - originX), (batch[i].z - originZ), 2, 2);
+            }
+            ctxOff.fill();
+        }
+    }
+
+    function updateAllRegions() {
+        for (const rName in regionsCache) {
+            updateRegionCanvas(rName);
+        }
+        requestRender();
+    }
+
+    function requestRender() {
+        if (!renderPending) {
+            renderPending = true;
+            requestAnimationFrame(render);
+        }
+    }
+
+    function render() {
+        renderPending = false;
+        ctx.fillStyle = '#0a0a0a';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        ctx.imageSmoothingEnabled = false;
+
+        ctx.save();
+        ctx.translate(canvas.width / 2, canvas.height / 2);
+        ctx.scale(camera.zoom, camera.zoom);
+        ctx.translate(-camera.x, -camera.z);
+        
+        const halfW = canvas.width / 2 / camera.zoom;
+        const halfH = canvas.height / 2 / camera.zoom;
+        const minX = camera.x - halfW; const maxX = camera.x + halfW;
+        const minZ = camera.z - halfH; const maxZ = camera.z + halfH;
+        
+        ctx.lineWidth = 1 / camera.zoom;
+        ctx.strokeStyle = '#222';
+        const startX = Math.floor(minX / 512) * 512;
+        const startZ = Math.floor(minZ / 512) * 512;
+        ctx.beginPath();
+        for (let x = startX; x <= maxX; x += 512) { ctx.moveTo(x, minZ); ctx.lineTo(x, maxZ); }
+        for (let z = startZ; z <= maxZ; z += 512) { ctx.moveTo(minX, z); ctx.lineTo(maxX, z); }
+        ctx.stroke();
+        
+        for (const rName in regionsCache) {
+            const rc = regionsCache[rName];
+            const rMinX = rc.rx * 512;
+            const rMaxX = rMinX + 512;
+            const rMinZ = rc.rz * 512;
+            const rMaxZ = rMinZ + 512;
+
+            if (rMaxX < minX || rMinX > maxX || rMaxZ < minZ || rMinZ > maxZ) continue;
+
+            ctx.drawImage(rc.canvas, rMinX, rMinZ, 512, 512);
+        }
+        
+        ctx.restore();
+        document.getElementById('coord-overlay').innerText = `X: ${Math.floor(mousePos.x)} | Z: ${Math.floor(mousePos.z)} | Zoom: ${camera.zoom.toFixed(2)}x`;
+    }
+
+    async function init() {
+        try {
+            const res = await fetch('/api/dimensions');
+            const dims = await res.json();
+            const select = document.getElementById('dimSelect');
+            select.innerHTML = '<option value="">-- Select Dimension --</option>';
+            dims.forEach(d => select.appendChild(new Option(d.name, d.id)));
+            
+            select.addEventListener('change', (e) => { 
+                if(e.target.value) {
+                    loadDimension(e.target.value); 
+                } else {
+                    activeDim = null;
+                    regionsCache = {};
+                    loadedRegions.clear();
+                    document.getElementById('oreListContainer').innerHTML = '<div class="text-center text-muted mt-4" id="emptyState"><small>Select a dimension.</small></div>';
+                    requestRender();
+                }
+            });
+        } catch (e) { console.error(e); }
+        
+        document.getElementById('hideSmallOres').addEventListener('change', (e) => {
+            hideSmall = e.target.checked; 
+            renderOreList(); 
+            updateAllRegions(); 
+        });
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            searchQuery = e.target.value.toLowerCase(); 
+            renderOreList();
+        });
+        
+        document.getElementById('btnShowAll').addEventListener('click', () => {
+            for(const name in nameToKeys) visibleNames.add(name);
+            renderOreList(); 
+            updateAllRegions();
+        });
+        
+        document.getElementById('btnHideAll').addEventListener('click', () => {
+            visibleNames.clear();
+            renderOreList(); 
+            updateAllRegions();
+        });
+        
+        setupCanvasInteractions();
+    }
+
+    async function loadDimension(dimName) {
+        activeDim = dimName;
+        try { document.getElementById('emptyState').style.display = 'none'; } catch(e) {}
+        
+        dictionary = {}; 
+        dictColors = {}; 
+        loadedRegions.clear(); 
+        regionsCache = {};      
+        spatialChunks = {};     
+        blocks = [];            
+        
+        nameToKeys = {}; 
+        nameColors = {};
+        mergedCounts = {};
+        visibleNames.clear(); 
+        availableRegions.clear(); 
+        
+        document.getElementById('oreListContainer').innerHTML = '<div class="text-center text-muted mt-4"><small>Loading data...</small></div>';
+        
+        camera = { x: 0, z: 0, zoom: 0.5 }; 
+        tooltip.style.display = 'none';
+        
+        try {
+            const res = await fetch(`/api/data/${activeDim}/dictionary.json`);
+            if (res.ok) {
+                dictionary = await res.json();
+                for (const key in dictionary) { 
+                    const name = dictionary[key];
+                    if (!nameToKeys[name]) {
+                        nameToKeys[name] = [];
+                        nameColors[name] = stringToColor(name);
+                        visibleNames.add(name);
+                    }
+                    nameToKeys[name].push(key);
+                    dictColors[key] = nameColors[name]; 
+                }
+            }
+        } catch (e) { console.warn(e); }
+
+        try {
+            const regRes = await fetch(`/api/prospected_regions/${activeDim}`);
+            if (regRes.ok) {
+                const list = await regRes.json();
+                list.forEach(r => availableRegions.add(r));
+            }
+        } catch (e) { console.warn(e); }
+        
+        checkLazyLoad(); 
+        requestRender();
+    }
+
+    async function checkLazyLoad() {
+        if (!activeDim) return;
+        const halfW = canvas.width / 2 / camera.zoom; const halfH = canvas.height / 2 / camera.zoom;
+        const minX = camera.x - halfW; const maxX = camera.x + halfW;
+        const minZ = camera.z - halfH; const maxZ = camera.z + halfH;
+        
+        const minRegionX = Math.floor(minX / 512); const maxRegionX = Math.floor(maxX / 512);
+        const minRegionZ = Math.floor(minZ / 512); const maxRegionZ = Math.floor(maxZ / 512);
+        const regionsToLoad = [];
+        
+        for (let rx = minRegionX; rx <= maxRegionX; rx++) {
+            for (let rz = minRegionZ; rz <= maxRegionZ; rz++) {
+                const rName = `r.${rx}.${rz}`;
+                
+                if (!availableRegions.has(rName)) continue; 
+
+                if (!loadedRegions.has(rName)) { 
+                    regionsToLoad.push(rName); 
+                    loadedRegions.add(rName); 
+                }
+            }
+        }
+        
+        if (regionsToLoad.length > 0) {
+            document.getElementById('loading-overlay').style.display = 'block';
+            Promise.all(regionsToLoad.map(rName => fetchRegion(rName, activeDim))).then(() => {
+                document.getElementById('loading-overlay').style.display = 'none';
+                renderOreList(); 
+                requestRender();
+            });
+        }
+    }
+
+    async function fetchRegion(rName, fetchDim) {
+        try {
+            const res = await fetch(`/api/data/${fetchDim}/${rName}.json`);
+            if (!res.ok) return; 
+            const data = await res.json();
+            
+            if (fetchDim !== activeDim) return;
+
+            const parts = rName.split('.');
+            const rx = parseInt(parts[1]);
+            const rz = parseInt(parts[2]);
+
+            const rc = {
+                rx: rx,
+                rz: rz,
+                canvas: document.createElement('canvas'),
+                blocks: []
+            };
+            rc.canvas.width = 512;
+            rc.canvas.height = 512;
+
+            for (const chunkKey in data) {
+                const chunkArr = data[chunkKey];
+                for (let i = 0; i < chunkArr.length; i++) {
+                    const [bx, by, bz, id, meta, small] = chunkArr[i];
+                    const key = `${id}:${meta}:${small}`;
+                    
+                    if (!dictionary[key]) { 
+                        const defaultName = `Unknown (${key})`;
+                        dictionary[key] = defaultName; 
+                        if(!nameToKeys[defaultName]) {
+                            nameToKeys[defaultName] = [];
+                            nameColors[defaultName] = stringToColor(defaultName);
+                            visibleNames.add(defaultName);
+                        }
+                        nameToKeys[defaultName].push(key);
+                        dictColors[key] = nameColors[defaultName];
+                    }
+                    
+                    const name = dictionary[key];
+                    mergedCounts[name] = (mergedCounts[name] || 0) + 1;
+                    
+                    const blockObj = { x: bx, z: bz, key: key, small: small === 1 };
+                    rc.blocks.push(blockObj);
+                    
+                    const cx = Math.floor(bx / 16);
+                    const cz = Math.floor(bz / 16);
+                    const cKey = cx + "," + cz;
+                    if (!spatialChunks[cKey]) spatialChunks[cKey] = [];
+                    spatialChunks[cKey].push(blockObj);
+                }
+            }
+            
+            regionsCache[rName] = rc;
+            updateRegionCanvas(rName);
+            requestRender();
+        } catch (e) {}
+    }
+
+    function renderOreList() {
+        if (!activeDim) return;
+        const container = document.getElementById('oreListContainer');
+        
+        const sortedNames = Object.keys(mergedCounts).filter(name => {
+            if (hideSmall && name.startsWith("Small ")) return false;
+            if (searchQuery && !name.toLowerCase().includes(searchQuery)) return false;
+            return true;
+        }).sort((a, b) => a.localeCompare(b));
+            
+        let html = '';
+        for (const name of sortedNames) {
+            const isVis = visibleNames.has(name);
+            const safeName = name.replace(/'/g, "\'");
+            
+            html += `<div class="ore-item ${isVis ? '' : 'disabled'}" onclick="toggleOre('${safeName}')">
+                        <div class="ore-color" style="background-color: ${nameColors[name]};"></div>
+                        <div class="ore-name" title="${name}">${name}</div>
+                        <div class="ore-count">${mergedCounts[name].toLocaleString()}</div>
+                     </div>`;
+        }
+        container.innerHTML = html || `<div class="text-center text-muted mt-4"><small>No ores found.</small></div>`;
+    }
+
+    window.toggleOre = function(name) {
+        visibleNames.has(name) ? visibleNames.delete(name) : visibleNames.add(name);
+        renderOreList(); 
+        updateAllRegions();
+    }
+
+    function setupCanvasInteractions() {
+        canvas.addEventListener('mousedown', (e) => { isDragging = true; dragStart = { x: e.clientX, y: e.clientY }; });
+        window.addEventListener('mouseup', () => { isDragging = false; checkLazyLoad(); });
+        
+        canvas.addEventListener('mousemove', (e) => {
+            const rect = canvas.getBoundingClientRect();
+            mousePos.x = (e.clientX - rect.left - canvas.width / 2) / camera.zoom + camera.x;
+            mousePos.z = (e.clientY - rect.top - canvas.height / 2) / camera.zoom + camera.z;
+            
+            if (isDragging) {
+                camera.x -= (e.clientX - dragStart.x) / camera.zoom;
+                camera.z -= (e.clientY - dragStart.y) / camera.zoom;
+                dragStart = { x: e.clientX, y: e.clientY }; 
+                requestRender();
+                tooltip.style.display = 'none';
+            } else {
+                document.getElementById('coord-overlay').innerText = `X: ${Math.floor(mousePos.x)} | Z: ${Math.floor(mousePos.z)} | Zoom: ${camera.zoom.toFixed(2)}x`;
+                
+                const cx = Math.floor(mousePos.x / 16);
+                const cz = Math.floor(mousePos.z / 16);
+                const cKey = cx + "," + cz;
+                
+                let hoveredNames = new Set();
+                if (spatialChunks[cKey]) {
+                    const hitRadius = Math.max(1, 2 / camera.zoom);
+                    const chunkBlocks = spatialChunks[cKey];
+                    for (let i = 0; i < chunkBlocks.length; i++) {
+                        const b = chunkBlocks[i];
+                        if (hideSmall && b.small) continue;
+                        const name = dictionary[b.key];
+                        if (!visibleNames.has(name)) continue;
+                        
+                        if (Math.abs(b.x - mousePos.x) <= hitRadius && Math.abs(b.z - mousePos.z) <= hitRadius) {
+                            hoveredNames.add(name);
+                        }
+                    }
+                }
+                
+                if (hoveredNames.size > 0) {
+                    tooltip.style.display = 'block';
+                    tooltip.style.left = (e.clientX - rect.left + 15) + 'px';
+                    tooltip.style.top = (e.clientY - rect.top + 15) + 'px';
+                    tooltip.innerHTML = `<span style="color:#aaa;">Block Info:</span><br><strong>X: ${Math.floor(mousePos.x)} | Z: ${Math.floor(mousePos.z)}</strong><hr style="margin:4px 0; border-color:#555;"><span style="color:#00ffcc;">` + Array.from(hoveredNames).join('</span><br><span style="color:#00ffcc;">') + '</span>';
+                } else {
+                    tooltip.style.display = 'none';
+                }
+            }
+        });
+        
+        canvas.addEventListener('mouseleave', () => tooltip.style.display = 'none');
+        
+        canvas.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            const rect = canvas.getBoundingClientRect();
+            const screenX = e.clientX - rect.left; const screenY = e.clientY - rect.top;
+            const worldXBefore = (screenX - canvas.width / 2) / camera.zoom + camera.x;
+            const worldZBefore = (screenY - canvas.height / 2) / camera.zoom + camera.z;
+            
+            camera.zoom *= e.deltaY < 0 ? 1.1 : (1/1.1);
+            camera.zoom = Math.max(0.01, Math.min(camera.zoom, 10));
+            
+            camera.x = worldXBefore - (screenX - canvas.width / 2) / camera.zoom;
+            camera.z = worldZBefore - (screenY - canvas.height / 2) / camera.zoom;
+            
+            requestRender();
+            tooltip.style.display = 'none';
+            clearTimeout(window.zoomDebounce);
+            window.zoomDebounce = setTimeout(checkLazyLoad, 200);
+        }, { passive: false });
+    }
+
+    function stringToColor(str) {
+        let hash = 0;
+        for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
+        let color = '#';
+        for (let i = 0; i < 3; i++) {
+            let value = Math.floor((((hash >> (i * 8)) & 0xFF) + 128) / 2); 
+            color += ('00' + value.toString(16)).substr(-2);
+        }
+        return color;
+    }
+
+    function resizeCanvas() {
+        canvas.width = canvas.parentElement.clientWidth;
+        canvas.height = canvas.parentElement.clientHeight;
+        requestRender();
+    }
+    window.addEventListener('resize', resizeCanvas);
+    
+    resizeCanvas();
+    init();
+</script>
+</body>
+</html>
