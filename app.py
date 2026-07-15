@@ -104,6 +104,13 @@ def save_settings(settings):
     with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump(settings, f, indent=4, ensure_ascii=False)
 
+def get_version():
+    version_file = "version.txt"
+    if os.path.exists(version_file):
+        with open(version_file, "r", encoding="utf-8") as f:
+            return f.read().strip()
+    return "Unknown"
+
 @app.route("/")
 def index():
     settings = load_settings()
@@ -117,7 +124,7 @@ def index():
     if os.path.exists(export_dir):
         available_dims = [d for d in os.listdir(export_dir) if os.path.isdir(os.path.join(export_dir, d))]
         
-    return render_template("index.html", settings=settings, dimensions=DIMENSIONS, running_processes=running, available_dims=available_dims)
+    return render_template("index.html", settings=settings, dimensions=DIMENSIONS, running_processes=running, available_dims=available_dims, version=get_version())
 
 @app.route("/save_settings", methods=["POST"])
 def save_config():
@@ -270,13 +277,18 @@ def generate_export():
 @app.route("/stop_prospecting", methods=["POST"])
 def stop_prospecting():
     pid = request.get_json().get("pid")
-    if not pid or pid not in RUNNING_PROCESSES: return jsonify({"status": "error"}), 400
+    if not pid: 
+        return jsonify({"status": "error"}), 400
     try:
-        proc = RUNNING_PROCESSES[pid]["process"]
+        RUNNING_PROCESSES[int(pid)]
+    except KeyError as e: 
+        return jsonify({"status": "error"}), 404
+    try:
+        proc = RUNNING_PROCESSES[int(pid)]["process"]
         if os.name == 'nt': subprocess.run(['taskkill', '/F', '/T', '/PID', str(pid)], capture_output=True)
         else: os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
         proc.terminate()
-        del RUNNING_PROCESSES[pid]
+        del RUNNING_PROCESSES[int(pid)]
         return jsonify({"status": "success"})
     except Exception as e: return jsonify({"status": "error"}), 500
 
