@@ -241,6 +241,8 @@ def process_and_save_region(file_path, export_dir_str, progress_queue):
                             block_data = parse_optional_int(te.get("m"))
                             small = str(te.get("m", "")).isdigit() and len(str(te.get("m"))) > 4
                             b_name, b_meta = resolve_block_name_and_meta(block_id, block_data)
+                            if b_name == "gt.blockores.0.name": continue
+                            if b_name == "minecraft:air": continue
                             
                             dict_key = f"{block_id}:{b_meta}:{int(small)}"
                             if dict_key not in local_dictionary:
@@ -252,7 +254,7 @@ def process_and_save_region(file_path, export_dir_str, progress_queue):
                             chunk_blocks.append([abs_x, abs_y, abs_z, block_id, b_meta, int(small)])
                     except Exception: continue
             
-            if (not TileEntityOres or not W_ONLY_ORES):
+            if (not TileEntityOres or not W_ONLY_ORES or True):
                 sections = level["Sections"] if "Sections" in [t.name for t in level.tags] else []
 
                 for section in sections:
@@ -268,6 +270,7 @@ def process_and_save_region(file_path, export_dir_str, progress_queue):
 
                                 b_name, b_meta = resolve_block_name_and_meta(block_id, block_data)
                                 if b_name == "gt.blockores.0.name": continue
+                                if b_name == "minecraft:air": continue
                                 if small and not b_name.startswith("Small"): b_name = f"Small {b_name}"
                                 
                                 dict_key = f"{block_id}:{b_meta}:{int(small)}"
