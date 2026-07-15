@@ -5,7 +5,8 @@ An external web application for parsing and rendering GregTech: New Horizons (GT
 ![Prospector Map](images/prospector.png)
 
 ## GTNH Version
-~~Recommented version: `2.8+`~~. Tested on `2.9 Beta 2`.
+Recommented version: `2.8+`. 
+Tested on `2.8.4`, `2.9 Beta 1`, `2.9 Beta 2`.
 
 ## Prerequisites: Data Dumps
 **Only works on already loaded chunks!**
