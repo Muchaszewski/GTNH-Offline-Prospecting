@@ -51,6 +51,7 @@ def init_worker(data_dir, skipped_ids_str, only_ores):
     
     W_ONLY_ORES = only_ores
     W_SKIPPED_IDS = set(int(x.strip()) for x in skipped_ids_str.split(",")) if skipped_ids_str else set()
+    W_SKIPPED_IDS.add(0)
     
     W_BLOCK_LOOKUP = load_block_lookup(data_dir)
     W_OREDICT_LOOKUP = load_oredict_lookup(data_dir)
@@ -109,7 +110,7 @@ def load_block_lookup(data_dir):
         for row in csv.DictReader(h):
             b_id = parse_optional_int(row.get("ID"))
             if b_id is not None:
-                lookup[b_id] = {"name": row.get("Name", "").strip(), "display_name": row.get("Display Name", "").strip()}
+                lookup[b_id] = {"name": row.get("Name", "").strip(), "display_name": row.get("Display Name", "").strip(), "id": b_id}
     return lookup
 
 def load_oredict_lookup(data_dir):
@@ -184,6 +185,18 @@ def resolve_block_name_and_meta(block_id, block_meta):
     W_CACHE[cache_key] = res
     return res
 
+def check_tile_entity_ores(chunk_nbt):
+    level = chunk_nbt["Level"]
+    try:
+        tile_entities = level["TileEntities"]
+        for te in tile_entities:
+            try:
+                te_id = normalize_identifier(te["id"].value)
+                if te_id == normalize_identifier("GT_TileEntity_Ores"): return True
+            except Exception: continue
+        return False
+    except Exception: return False
+
 def process_and_save_region(file_path, export_dir_str, progress_queue):
     export_dir = Path(export_dir_str)
     region_name = os.path.basename(file_path)
@@ -197,40 +210,74 @@ def process_and_save_region(file_path, export_dir_str, progress_queue):
     chunk_count = 0
     time_start = time.time()
 
+    try:
+        universal_ore_id = 0
+        for block in W_BLOCK_LOOKUP.values():
+            if normalize_identifier(block.get("display_name")) == "gt.blockores.0.name":
+                universal_ore_id = block.get("id", "")
+                break
+    except Exception: pass
+
     for region_chunk_x in range(32):
         for region_chunk_z in range(32):
             try: chunk_nbt = region.chunk_data(region_chunk_x, region_chunk_z)
             except Exception: continue
             if chunk_nbt is None: continue
 
+            TileEntityOres = check_tile_entity_ores(chunk_nbt)
+
             level = chunk_nbt["Level"]
             world_chunk_x = level["xPos"].value
             world_chunk_z = level["zPos"].value
-            sections = level["Sections"] if "Sections" in [t.name for t in level.tags] else []
             chunk_blocks = []
 
-            for section in sections:
-                section_min_y = section["Y"].value * 16
-                for local_y in range(16):
-                    for local_z in range(16):
-                        for local_x in range(16):
-                            index = (local_y << 8) | (local_z << 4) | local_x
-                            block_id, block_data, small = decode_section_block(section, index)
-
-                            if W_ONLY_ORES and block_id not in W_ORES_IDS: continue
-                            if block_id in W_SKIPPED_IDS: continue
-
+            if TileEntityOres:
+                tile_entities = level["TileEntities"]
+                for te in tile_entities:
+                    try:
+                        te_id = normalize_identifier(te["id"].value)
+                        if te_id == normalize_identifier("GT_TileEntity_Ores"): 
+                            block_id = universal_ore_id
+                            block_data = parse_optional_int(te.get("m"))
+                            small = str(te.get("m", "")).isdigit() and len(str(te.get("m"))) > 4
                             b_name, b_meta = resolve_block_name_and_meta(block_id, block_data)
-                            if small and not b_name.startswith("Small"): b_name = f"Small {b_name}"
                             
                             dict_key = f"{block_id}:{b_meta}:{int(small)}"
                             if dict_key not in local_dictionary:
                                 local_dictionary[dict_key] = b_name
                             
-                            abs_x = world_chunk_x * 16 + local_x
-                            abs_y = section_min_y + local_y
-                            abs_z = world_chunk_z * 16 + local_z
+                            abs_x = te["x"].value
+                            abs_y = te["y"].value
+                            abs_z = te["z"].value
                             chunk_blocks.append([abs_x, abs_y, abs_z, block_id, b_meta, int(small)])
+                    except Exception: continue
+            
+            if (TileEntityOres or not W_ONLY_ORES):
+                sections = level["Sections"] if "Sections" in [t.name for t in level.tags] else []
+
+                for section in sections:
+                    section_min_y = section["Y"].value * 16
+                    for local_y in range(16):
+                        for local_z in range(16):
+                            for local_x in range(16):
+                                index = (local_y << 8) | (local_z << 4) | local_x
+                                block_id, block_data, small = decode_section_block(section, index)
+
+                                if W_ONLY_ORES and block_id not in W_ORES_IDS: continue
+                                if block_id in W_SKIPPED_IDS: continue
+
+                                b_name, b_meta = resolve_block_name_and_meta(block_id, block_data)
+                                if b_name == "gt.blockores.0.name": continue
+                                if small and not b_name.startswith("Small"): b_name = f"Small {b_name}"
+                                
+                                dict_key = f"{block_id}:{b_meta}:{int(small)}"
+                                if dict_key not in local_dictionary:
+                                    local_dictionary[dict_key] = b_name
+                                
+                                abs_x = world_chunk_x * 16 + local_x
+                                abs_y = section_min_y + local_y
+                                abs_z = world_chunk_z * 16 + local_z
+                                chunk_blocks.append([abs_x, abs_y, abs_z, block_id, b_meta, int(small)])
             
             if chunk_blocks: region_data[f"{world_chunk_x},{world_chunk_z}"] = chunk_blocks
             chunk_count += 1

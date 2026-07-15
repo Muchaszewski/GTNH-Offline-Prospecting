@@ -10,7 +10,7 @@ app = Flask(__name__)
 SETTINGS_FILE = "web_settings.json"
 DEFAULT_SETTINGS = {
     "world_dir": "",
-    "skip_block_ids": "0,7,1,2,3,9,12,13,24,80,11,87,88,1202,121,1379,1418",
+    "skip_block_ids": "7,1,2,3,9,12,13,24,80,11,87,88,1202,121,1379,1418",
     "cpu_usage": 75,
     "only_ores": True,
     "dump_dir": "dumps",
