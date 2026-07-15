@@ -252,7 +252,7 @@ def process_and_save_region(file_path, export_dir_str, progress_queue):
                             chunk_blocks.append([abs_x, abs_y, abs_z, block_id, b_meta, int(small)])
                     except Exception: continue
             
-            if (TileEntityOres or not W_ONLY_ORES):
+            if (not TileEntityOres or not W_ONLY_ORES):
                 sections = level["Sections"] if "Sections" in [t.name for t in level.tags] else []
 
                 for section in sections:
